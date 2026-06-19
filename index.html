@@ -1505,44 +1505,23 @@
       console.log('🔍 Searching anime for:', a.title_english || a.title);
 
       const titleSearch = a.title_english || a.title;
-      const targetUrl = `https://www.2embed.cc/api/embedlinks?q=${encodeURIComponent(titleSearch)}`;
       
-      // Try multiple proxy services in sequence
-      const proxies = [
-        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
-        `https://cors-anywhere.herokuapp.com/${targetUrl}`,
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
-        targetUrl // Direct as last resort
-      ];
-
-      let searchData = null;
-      let lastError = null;
-
-      for (let i = 0; i < proxies.length; i++) {
-        try {
-          const proxyUrl = proxies[i];
-          const proxyName = i === 0 ? 'corsproxy.io' : i === 1 ? 'cors-anywhere' : i === 2 ? 'allorigins' : 'direct';
-          
-          console.log(`📡 Attempt ${i + 1}: Trying ${proxyName}...`);
-          const res = await fetch(proxyUrl, { mode: 'cors' });
-          
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-          
-          searchData = await res.json();
-          console.log(`✅ Success with ${proxyName}!`, searchData);
-          break; // Success, exit loop
-          
-        } catch (err) {
-          lastError = err;
-          console.warn(`⚠️ ${['corsproxy.io', 'cors-anywhere', 'allorigins', 'direct'][i]} failed:`, err.message);
-          continue; // Try next proxy
-        }
+      // Use backend proxy server (much more reliable than client-side proxies)
+      const backendUrl = `http://localhost:3000/api/anime/search?q=${encodeURIComponent(titleSearch)}`;
+      // Or if deployed: const backendUrl = `https://your-server.com/api/anime/search?q=${encodeURIComponent(titleSearch)}`;
+      
+      console.log('📡 Calling backend proxy...');
+      const searchRes = await fetch(backendUrl);
+      
+      if (!searchRes.ok) {
+        throw new Error(`Backend error: ${searchRes.status} ${searchRes.statusText}`);
       }
-
-      if (!searchData || !searchData.results || searchData.results.length === 0) {
-        throw new Error('No anime found or all proxies failed: ' + lastError?.message);
+      
+      const searchData = await searchRes.json();
+      console.log('✅ Search results from backend:', searchData);
+      
+      if (!searchData.results || searchData.results.length === 0) {
+        throw new Error('No anime found on 2embed');
       }
 
       const anime = searchData.results[0];
@@ -1567,8 +1546,9 @@
         </iframe>`;
 
     } catch (e) {
-      console.error('🔴 Final Error:', e.message);
-      console.error('Stack:', e.stack);
+      console.error('🔴 Error:', e.message);
+      console.error('💡 Make sure the backend server is running on port 3000');
+      console.error('💡 Run: npm install && npm start');
       showPlayerFallback(a, ep);
     }
   }
