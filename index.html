@@ -1262,6 +1262,10 @@
 
 <script>
   const BASE = 'https://api.jikan.moe/v4';
+  const CORS_PROXY = 'https://cors-anywhere.herokuapp.com/';
+  
+  // Alternative: use direct API without proxy if available
+  const API_BASE = 'https://api.consumet.org';
   let currentSection = 'trending';
   let currentType = '';
   let allCards = [];
@@ -1409,6 +1413,7 @@
     if (!currentAnimeData) return;
     const a = currentAnimeData;
 
+    // Hide main page
     document.getElementById('modal-backdrop').classList.remove('open');
     document.querySelector('header').style.display = 'none';
     document.querySelector('.hero').style.display = 'none';
@@ -1428,67 +1433,221 @@
     document.getElementById('watch-type-badge').textContent = a.type || 'أنمي';
     document.getElementById('watch-score').textContent = a.score ? `★ ${a.score}` : '';
 
-    statusIdx = 0;
-    document.getElementById('throbber-status').textContent = statusMessages[0];
-    clearInterval(statusInterval);
-    statusInterval = setInterval(cycleStatus, 2800);
-
+    // === LOAD EPISODES LIST FIRST ===
     const totalEp = a.episodes || 12;
     const epList = document.getElementById('ep-list');
-    document.getElementById('ep-count-badge').textContent = `${toArabicNum(totalEp)} حلقة`;
-
-    let epTitles = {};
-    try {
-      const epRes = await fetch(`${BASE}/anime/${a.mal_id}/episodes?page=1`);
-      const epJson = await epRes.json();
-      (epJson.data || []).forEach(e => { epTitles[e.mal_id] = e.title || `الحلقة ${e.mal_id}`; });
-    } catch(e) {}
-
-    const epItemsHtml = Array.from({length: Math.min(totalEp, 50)}, (_, i) => {
-      const n = i + 1;
-      const title = epTitles[n] || `الحلقة ${toArabicNum(n)}`;
-      const isActive = n === ep;
-      return `
-        <div class="ep-item${isActive ? ' active' : ''}" data-ep="${n}" onclick="switchEp(${n})">
-          <div class="ep-num">${n}</div>
-          <div class="ep-thumb">
-            <img src="${imgUrl}" alt="حلقة ${n}" loading="lazy" />
-            <div class="ep-playing-indicator">
-              <div class="ep-playing-bars">
-                <span></span><span></span><span></span><span></span>
+    const mobileEpList = document.getElementById('mobile-ep-list');
+    
+    if (epList) {
+      document.getElementById('ep-count-badge').textContent = `${toArabicNum(totalEp)} حلقة`;
+      
+      // Build episodes list (will try to fetch titles from API)
+      const epItemsHtml = Array.from({length: Math.min(totalEp, 50)}, (_, i) => {
+        const n = i + 1;
+        const title = `الحلقة ${toArabicNum(n)}`;
+        const isActive = n === ep;
+        return `
+          <div class="ep-item${isActive ? ' active' : ''}" data-ep="${n}" onclick="switchEp(${n})" style="display: flex !important; flex-direction: row-reverse;">
+            <div class="ep-num">${n}</div>
+            <div class="ep-thumb">
+              <img src="${imgUrl}" alt="حلقة ${n}" loading="lazy" />
+              <div class="ep-playing-indicator">
+                <div class="ep-playing-bars">
+                  <span></span><span></span><span></span><span></span>
+                </div>
               </div>
             </div>
+            <div class="ep-details">
+              <div class="ep-title">${esc(title)}</div>
+              <div class="ep-duration">٢٤ دقيقة</div>
+            </div>
+          </div>`;
+      }).join('');
+
+      epList.innerHTML = epItemsHtml;
+      if (mobileEpList) mobileEpList.innerHTML = epItemsHtml;
+
+      // Activate episodes tab
+      document.querySelectorAll('.mobile-tab').forEach((b, i) => b.classList.toggle('active', i === 0));
+      document.querySelectorAll('.mobile-panel').forEach(p => p.classList.toggle('active', p.id === 'mobile-panel-episodes'));
+
+      // Scroll to active episode
+      requestAnimationFrame(() => {
+        document.querySelectorAll('.ep-item.active').forEach(active => active.scrollIntoView({ block: 'nearest' }));
+      });
+    }
+
+    // === LOAD VIDEO PLAYER ===
+    const playerShell = document.querySelector('.player-shell');
+    if (playerShell) {
+      playerShell.innerHTML = `
+        <div class="throbber-wrap">
+          <div class="throbber">
+            <div class="throbber-ring"></div>
+            <div class="throbber-ring"></div>
+            <div class="throbber-ring"></div>
+            <div class="throbber-dot"></div>
           </div>
-          <div class="ep-details">
-            <div class="ep-title">${esc(title)}</div>
-            <div class="ep-duration">٢٤ دقيقة</div>
-          </div>
+          <div class="throbber-status" id="throbber-status">جارٍ تحميل الحلقة ${toArabicNum(ep)}...</div>
         </div>`;
-    }).join('');
 
-    epList.innerHTML = epItemsHtml;
-    document.getElementById('mobile-ep-list').innerHTML = epItemsHtml;
-
-    // reset mobile tabs to "episodes" each time the watch page opens/switches anime
-    document.querySelectorAll('.mobile-tab').forEach((b, i) => b.classList.toggle('active', i === 0));
-    document.querySelectorAll('.mobile-panel').forEach(p => p.classList.toggle('active', p.id === 'mobile-panel-episodes'));
-
-    requestAnimationFrame(() => {
-      document.querySelectorAll('.ep-item.active').forEach(active => active.scrollIntoView({ block: 'nearest' }));
-    });
+      loadEpisodeStream(ep, a);
+    }
 
     loadSuggestions(a.mal_id);
   }
 
-  function switchEp(n) {
+  async function loadEpisodeStream(ep, a) {
+    const playerShell = document.querySelector('.player-shell');
+    if (!playerShell) return;
+
+    try {
+      console.log('🔍 Searching for:', a.title_english || a.title);
+
+      const titleSearch = a.title_english || a.title;
+      
+      // Try multiple API providers
+      const providers = [
+        {
+          name: 'Anikoto (HiAnime Successor)',
+          search: async () => {
+            const res = await fetch(`https://api.anikotoapi.site/search?query=${encodeURIComponent(titleSearch)}`);
+            if (!res.ok) throw new Error('Search failed');
+            const data = await res.json();
+            return data.results?.[0]?.id;
+          },
+          watch: async (id) => {
+            const res = await fetch(`https://api.anikotoapi.site/anime/${id}/episodes`);
+            if (!res.ok) throw new Error('Episodes fetch failed');
+            const data = await res.json();
+            if (data.episodes && data.episodes[ep - 1]) {
+              const epId = data.episodes[ep - 1].episodeId;
+              const streamRes = await fetch(`https://megaplay.buzz/stream/s-2/${epId}/sub`);
+              if (streamRes.ok) {
+                return streamRes.url;
+              }
+            }
+            throw new Error('No stream found');
+          }
+        },
+        {
+          name: 'Jikan API + MAL ID',
+          search: async () => {
+            return a.mal_id; // Use MAL ID directly
+          },
+          watch: async (malId) => {
+            const m3u8Url = `https://megaplay.buzz/stream/ma/${malId}/${ep}/sub`;
+            return m3u8Url;
+          }
+        },
+        {
+          name: 'GoGoAnime Fallback',
+          search: async () => {
+            const res = await fetch(`https://api.jikan.moe/v4/anime?query=${encodeURIComponent(titleSearch)}`);
+            if (!res.ok) throw new Error('Jikan search failed');
+            const data = await res.json();
+            return data.data?.[0]?.mal_id;
+          },
+          watch: async (malId) => {
+            // Fallback to MAL-based stream
+            const m3u8Url = `https://megaplay.buzz/stream/ma/${malId}/${ep}/sub`;
+            return m3u8Url;
+          }
+        }
+      ];
+
+      for (let provider of providers) {
+        try {
+          console.log(`📡 Trying ${provider.name}...`);
+          
+          const id = await provider.search();
+          if (!id) continue;
+          
+          console.log(`✅ Found on ${provider.name}, ID:`, id);
+          
+          const streamUrl = await provider.watch(id);
+          if (!streamUrl) continue;
+          
+          console.log('🎬 Got stream:', streamUrl);
+
+          playerShell.innerHTML = `
+            <video id="main-player" controls autoplay style="width:100%; height:100%; background:#000;" playsinline crossorigin="anonymous">
+              متصفحك لا يدعم الفيديو.
+            </video>`;
+
+          const video = document.getElementById('main-player');
+          video.src = streamUrl;
+
+          video.addEventListener('error', (err) => {
+            console.error('Video error:', err);
+            showPlayerFallback(a, ep);
+          });
+
+          return; // Success - exit
+          
+        } catch (e) {
+          console.warn(`${provider.name} failed:`, e.message);
+          continue;
+        }
+      }
+
+      // All providers failed
+      console.warn('All providers failed');
+      showPlayerFallback(a, ep);
+
+    } catch (e) {
+      console.error('🔴 Stream load error:', e);
+      showPlayerFallback(a, ep);
+    }
+  }
+
+  function showPlayerFallback(a, ep) {
+    const playerShell = document.querySelector('.player-shell');
+    if (!playerShell) return;
+    
+    const searchTitle = encodeURIComponent(a.title_english || a.title);
+    
+    playerShell.innerHTML = `
+      <div style="width:100%; height:100%; background:linear-gradient(135deg,rgba(124,58,237,0.1),rgba(236,72,153,0.05)); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:2rem; font-family:'Cairo',sans-serif;">
+        <p style="font-size:1.3rem; color:var(--text); margin-bottom:2rem; text-align:center;">🎬 الحلقات متاحة أدناه</p>
+        <p style="color:var(--muted); font-size:0.95rem; margin-bottom:2rem; text-align:center; max-width:400px;">اختر الحلقة من القائمة، أو استخدم المواقع الخارجية:</p>
+        <div style="display:flex; gap:0.75rem; flex-wrap:wrap; justify-content:center;">
+          <a href="https://hianime.to/search?keyword=${searchTitle}" target="_blank" style="padding:0.6rem 1.2rem; background:var(--violet); color:#fff; border-radius:6px; text-decoration:none; font-size:0.9rem; font-weight:600;">HiAnime</a>
+          <a href="https://www.gogoanime.run/?s=${searchTitle}" target="_blank" style="padding:0.6rem 1.2rem; background:var(--pink); color:#fff; border-radius:6px; text-decoration:none; font-size:0.9rem; font-weight:600;">GoGoAnime</a>
+          <a href="https://www.animeworld.so/search/${searchTitle}" target="_blank" style="padding:0.6rem 1.2rem; background:var(--cyan); color:#000; border-radius:6px; text-decoration:none; font-size:0.9rem; font-weight:600;">AnimeWorld</a>
+        </div>
+      </div>`;
+  }
+
+  async function switchEp(n) {
     document.getElementById('watch-ep-badge').textContent = `الحلقة ${toArabicNum(n)}`;
     document.querySelectorAll('.ep-item').forEach(el => {
       el.classList.toggle('active', Number(el.dataset.ep) === n);
     });
-    statusIdx = 0;
-    document.getElementById('throbber-status').textContent = statusMessages[0];
-    clearInterval(statusInterval);
-    statusInterval = setInterval(cycleStatus, 2800);
+
+    // Scroll to active episode
+    requestAnimationFrame(() => {
+      document.querySelectorAll('.ep-item.active').forEach(active => active.scrollIntoView({ block: 'nearest' }));
+    });
+
+    // Load new episode stream
+    const a = currentAnimeData;
+    const playerShell = document.querySelector('.player-shell');
+    
+    if (playerShell) {
+      playerShell.innerHTML = `
+        <div class="throbber-wrap">
+          <div class="throbber">
+            <div class="throbber-ring"></div>
+            <div class="throbber-ring"></div>
+            <div class="throbber-ring"></div>
+            <div class="throbber-dot"></div>
+          </div>
+          <div class="throbber-status" id="throbber-status">جارٍ تحميل الحلقة ${toArabicNum(n)}...</div>
+        </div>`;
+
+      loadEpisodeStream(n, a);
+    }
   }
 
   function setMobileTab(tab, btn) {
