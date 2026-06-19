@@ -1502,101 +1502,73 @@
     if (!playerShell) return;
 
     try {
-      console.log('🔍 Searching for:', a.title_english || a.title);
+      console.log('🔍 Searching anime for:', a.title_english || a.title);
 
       const titleSearch = a.title_english || a.title;
+      const targetUrl = `https://www.2embed.cc/api/embedlinks?q=${encodeURIComponent(titleSearch)}`;
       
-      // Try multiple API providers
-      const providers = [
-        {
-          name: 'Anikoto (HiAnime Successor)',
-          search: async () => {
-            const res = await fetch(`https://api.anikotoapi.site/search?query=${encodeURIComponent(titleSearch)}`);
-            if (!res.ok) throw new Error('Search failed');
-            const data = await res.json();
-            return data.results?.[0]?.id;
-          },
-          watch: async (id) => {
-            const res = await fetch(`https://api.anikotoapi.site/anime/${id}/episodes`);
-            if (!res.ok) throw new Error('Episodes fetch failed');
-            const data = await res.json();
-            if (data.episodes && data.episodes[ep - 1]) {
-              const epId = data.episodes[ep - 1].episodeId;
-              const streamRes = await fetch(`https://megaplay.buzz/stream/s-2/${epId}/sub`);
-              if (streamRes.ok) {
-                return streamRes.url;
-              }
-            }
-            throw new Error('No stream found');
-          }
-        },
-        {
-          name: 'Jikan API + MAL ID',
-          search: async () => {
-            return a.mal_id; // Use MAL ID directly
-          },
-          watch: async (malId) => {
-            const m3u8Url = `https://megaplay.buzz/stream/ma/${malId}/${ep}/sub`;
-            return m3u8Url;
-          }
-        },
-        {
-          name: 'GoGoAnime Fallback',
-          search: async () => {
-            const res = await fetch(`https://api.jikan.moe/v4/anime?query=${encodeURIComponent(titleSearch)}`);
-            if (!res.ok) throw new Error('Jikan search failed');
-            const data = await res.json();
-            return data.data?.[0]?.mal_id;
-          },
-          watch: async (malId) => {
-            // Fallback to MAL-based stream
-            const m3u8Url = `https://megaplay.buzz/stream/ma/${malId}/${ep}/sub`;
-            return m3u8Url;
-          }
-        }
+      // Try multiple proxy services in sequence
+      const proxies = [
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+        `https://cors-anywhere.herokuapp.com/${targetUrl}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+        targetUrl // Direct as last resort
       ];
 
-      for (let provider of providers) {
+      let searchData = null;
+      let lastError = null;
+
+      for (let i = 0; i < proxies.length; i++) {
         try {
-          console.log(`📡 Trying ${provider.name}...`);
+          const proxyUrl = proxies[i];
+          const proxyName = i === 0 ? 'corsproxy.io' : i === 1 ? 'cors-anywhere' : i === 2 ? 'allorigins' : 'direct';
           
-          const id = await provider.search();
-          if (!id) continue;
+          console.log(`📡 Attempt ${i + 1}: Trying ${proxyName}...`);
+          const res = await fetch(proxyUrl, { mode: 'cors' });
           
-          console.log(`✅ Found on ${provider.name}, ID:`, id);
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
           
-          const streamUrl = await provider.watch(id);
-          if (!streamUrl) continue;
+          searchData = await res.json();
+          console.log(`✅ Success with ${proxyName}!`, searchData);
+          break; // Success, exit loop
           
-          console.log('🎬 Got stream:', streamUrl);
-
-          playerShell.innerHTML = `
-            <video id="main-player" controls autoplay style="width:100%; height:100%; background:#000;" playsinline crossorigin="anonymous">
-              متصفحك لا يدعم الفيديو.
-            </video>`;
-
-          const video = document.getElementById('main-player');
-          video.src = streamUrl;
-
-          video.addEventListener('error', (err) => {
-            console.error('Video error:', err);
-            showPlayerFallback(a, ep);
-          });
-
-          return; // Success - exit
-          
-        } catch (e) {
-          console.warn(`${provider.name} failed:`, e.message);
-          continue;
+        } catch (err) {
+          lastError = err;
+          console.warn(`⚠️ ${['corsproxy.io', 'cors-anywhere', 'allorigins', 'direct'][i]} failed:`, err.message);
+          continue; // Try next proxy
         }
       }
 
-      // All providers failed
-      console.warn('All providers failed');
-      showPlayerFallback(a, ep);
+      if (!searchData || !searchData.results || searchData.results.length === 0) {
+        throw new Error('No anime found or all proxies failed: ' + lastError?.message);
+      }
+
+      const anime = searchData.results[0];
+      const animeId = anime.id || anime.mal_id;
+      
+      console.log('✅ Found anime ID:', animeId, 'Title:', anime.title);
+
+      // Create iframe embed
+      const iframeSrc = `https://www.2embed.cc/embedanime/${animeId}/${ep}`;
+      
+      console.log('🎬 Loading embed URL:', iframeSrc);
+
+      // Load iframe player
+      playerShell.innerHTML = `
+        <iframe 
+          src="${iframeSrc}" 
+          width="100%" 
+          height="100%" 
+          frameborder="0" 
+          allowfullscreen 
+          style="background:#000;">
+        </iframe>`;
 
     } catch (e) {
-      console.error('🔴 Stream load error:', e);
+      console.error('🔴 Final Error:', e.message);
+      console.error('Stack:', e.stack);
       showPlayerFallback(a, ep);
     }
   }
